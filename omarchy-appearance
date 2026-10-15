@@ -1,0 +1,456 @@
+#!/bin/bash
+#
+# omarchy-appearance — pick the theme of each part of the desktop on its own.
+#
+#   omarchy-appearance state                      JSON snapshot for the panel
+#   omarchy-appearance set desktop <theme>        omarchy theme set
+#   omarchy-appearance set background <image>     omarchy theme bg set
+#   omarchy-appearance set background next|picker
+#   omarchy-appearance set bar|terminal|nvim <theme|follow>
+#   omarchy-appearance set zed <zed theme name>
+#   omarchy-appearance set herdr <herdr theme name>
+#   omarchy-appearance pick desktop               native theme switcher
+#   omarchy-appearance open                       toggle the bar panel
+#   omarchy-appearance menu install|remove        entry in the Omarchy menu
+#
+# Every `set` prints {"ok":true} or {"ok":false,"error":"..."} on stdout.
+
+set -uo pipefail
+
+OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+PLUGIN_ID="piazza.appearance"
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+
+STATE_DIR="$HOME/.local/state/omarchy-appearance"
+CURRENT_THEME_DIR="$HOME/.local/state/omarchy/current/theme"
+USER_THEMES="$HOME/.config/omarchy/themes"
+STOCK_THEMES="$OMARCHY_PATH/themes"
+
+GHOSTTY_CONF="$HOME/.config/ghostty/config"
+ALACRITTY_CONF="$HOME/.config/alacritty/alacritty.toml"
+KITTY_CONF="$HOME/.config/kitty/kitty.conf"
+FOOT_CONF="$HOME/.config/foot/foot.ini"
+NVIM_THEME_LINK="$HOME/.config/nvim/lua/plugins/theme.lua"
+SHELL_TOML="$HOME/.config/omarchy/shell.toml"
+ZED_SETTINGS="$HOME/.config/zed/settings.json"
+HERDR_CONFIG="$HOME/.config/herdr/config.toml"
+MENU_FILE="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
+
+BLOCK_START="# >>> omarchy-appearance (managed, do not edit)"
+BLOCK_END="# <<< omarchy-appearance"
+
+ok() { printf '{"ok":true}\n'; }
+fail() {
+  jq -cn --arg e "$1" '{ok:false,error:$e}'
+  exit 1
+}
+
+# --- themes ------------------------------------------------------------------
+
+theme_slugs() {
+  {
+    find "$USER_THEMES" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -printf '%f\n' 2>/dev/null
+    find "$STOCK_THEMES" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null
+  } | sort -u
+}
+
+theme_label() {
+  sed -E 's/(^|-)([a-z])/\1\u\2/g; s/-/ /g' <<<"$1"
+}
+
+# Accepts a slug or the display name `omarchy theme list` prints.
+theme_slug() {
+  local wanted="$1" slug
+  while read -r slug; do
+    if [[ $slug == "$wanted" || $(theme_label "$slug") == "$wanted" ]]; then
+      echo "$slug"
+      return 0
+    fi
+  done < <(theme_slugs)
+  return 1
+}
+
+# Builds a theme's per-app files with Omarchy's own template renderer, in a
+# throwaway HOME, so the theme that is live on the desktop is never touched.
+render_theme() {
+  local slug="$1" out="$2" tmp next src
+  tmp=$(mktemp -d)
+  next="$tmp/.local/state/omarchy/current/next-theme"
+  mkdir -p "$next" "$tmp/.config/omarchy/themed"
+
+  for src in "$STOCK_THEMES/$slug" "$USER_THEMES/$slug"; do
+    [[ -d $src ]] || continue
+    # A theme cloned from git may not ship code; Omarchy regenerates these.
+    if [[ -d $src/.git ]]; then
+      find -L "$src" -maxdepth 1 -type f \
+        ! -name '*.lua' ! -name 'alacritty.toml' ! -name 'foot.ini' \
+        ! -name 'ghostty.conf' ! -name 'kitty.conf' ! -name 'vscode.json' \
+        -exec cp {} "$next/" \;
+    else
+      find -L "$src" -maxdepth 1 -type f -exec cp {} "$next/" \;
+    fi
+  done
+  cp "$HOME"/.config/omarchy/themed/*.tpl "$tmp/.config/omarchy/themed/" 2>/dev/null
+
+  if [[ ! -f $next/colors.toml ]]; then
+    rm -rf "$tmp"
+    return 1
+  fi
+
+  HOME="$tmp" OMARCHY_PATH="$OMARCHY_PATH" omarchy-theme-set-templates >/dev/null 2>&1
+
+  rm -rf "$out"
+  mkdir -p "$out"
+  cp "$next"/* "$out/" 2>/dev/null
+  echo "$slug" >"$out/theme"
+  rm -rf "$tmp"
+}
+
+slot_theme() {
+  cat "$STATE_DIR/$1/theme" 2>/dev/null || echo follow
+}
+
+# --- terminal ----------------------------------------------------------------
+
+# Rewrites the include in each terminal config so it points at `dir`. Only the
+# line that already points at a theme file is touched.
+point_terminals() {
+  local dir="$1" file conf
+  local pattern='[^"'"'"' =]*/(omarchy/current/theme|omarchy-appearance/terminal|omarchy/pinned/[^/]+)'
+  for pair in "ghostty.conf:$GHOSTTY_CONF" "alacritty.toml:$ALACRITTY_CONF" \
+    "kitty.conf:$KITTY_CONF" "foot.ini:$FOOT_CONF"; do
+    file="${pair%%:*}"
+    conf="${pair#*:}"
+    [[ -f $conf ]] || continue
+    sed -E -i "s#${pattern}/${file//./\\.}#${dir}/${file}#" "$conf"
+  done
+  omarchy-restart-terminal >/dev/null 2>&1 || true
+}
+
+set_terminal() {
+  if [[ $1 == follow ]]; then
+    point_terminals "~/.local/state/omarchy/current/theme"
+    rm -rf "$STATE_DIR/terminal"
+  else
+    render_theme "$1" "$STATE_DIR/terminal" || fail "could not render theme $1"
+    point_terminals "~/.local/state/omarchy-appearance/terminal"
+  fi
+}
+
+# --- neovim ------------------------------------------------------------------
+
+set_nvim() {
+  [[ -d $(dirname "$NVIM_THEME_LINK") ]] || fail "no LazyVim config at ~/.config/nvim"
+  if [[ -e $NVIM_THEME_LINK && ! -L $NVIM_THEME_LINK ]]; then
+    fail "~/.config/nvim/lua/plugins/theme.lua is a regular file; leaving it alone"
+  fi
+  if [[ $1 == follow ]]; then
+    ln -sfn "$CURRENT_THEME_DIR/neovim.lua" "$NVIM_THEME_LINK"
+    rm -rf "$STATE_DIR/nvim"
+  else
+    render_theme "$1" "$STATE_DIR/nvim" || fail "could not render theme $1"
+    [[ -f $STATE_DIR/nvim/neovim.lua ]] || fail "theme $1 has no neovim.lua"
+    ln -sfn "$STATE_DIR/nvim/neovim.lua" "$NVIM_THEME_LINK"
+  fi
+  # Lazy's change detection is what triggers the hot-reload in running nvims.
+  touch "$STATE_DIR" "$(readlink -f "$NVIM_THEME_LINK")" 2>/dev/null || true
+}
+
+# --- bar ---------------------------------------------------------------------
+
+strip_bar_block() {
+  [[ -f $SHELL_TOML ]] || return 0
+  sed -i "/^${BLOCK_START//\//\\/}\$/,/^${BLOCK_END//\//\\/}\$/d" "$SHELL_TOML"
+}
+
+# The shell layers ~/.config/omarchy/shell.toml over the theme's own and
+# watches it, so pinning the bar is a [bar] block appended there.
+set_bar() {
+  if [[ $1 == follow ]]; then
+    strip_bar_block
+    rm -rf "$STATE_DIR/bar"
+    return
+  fi
+  render_theme "$1" "$STATE_DIR/bar" || fail "could not render theme $1"
+  local keys
+  keys=$(awk '
+    /^\s*\[/ { in_bar = ($0 ~ /^\s*\[bar\]/); next }
+    in_bar && /^\s*(background|background-alpha|text|active)\s*=/ { print }
+  ' "$STATE_DIR/bar/shell.toml")
+  [[ -n $keys ]] || fail "theme $1 has no [bar] colors"
+
+  mkdir -p "$(dirname "$SHELL_TOML")"
+  touch "$SHELL_TOML"
+  strip_bar_block
+  # Kept last in the file: the shell's reader has no notion of a section
+  # ending, so anything after it would land in [bar].
+  printf '%s\n[bar]\n%s\n%s\n' "$BLOCK_START" "$keys" "$BLOCK_END" >>"$SHELL_TOML"
+}
+
+# --- zed ---------------------------------------------------------------------
+
+zed_installed() {
+  command -v zeditor >/dev/null 2>&1 || command -v zed >/dev/null 2>&1 || [[ -f $ZED_SETTINGS ]]
+}
+
+zed_themes() {
+  python3 - "$HOME" <<'PY'
+import glob, json, re, sys
+home = sys.argv[1]
+names = ["One Dark", "One Light", "Ayu Dark", "Ayu Light", "Ayu Mirage",
+         "Gruvbox Dark", "Gruvbox Dark Hard", "Gruvbox Dark Soft",
+         "Gruvbox Light", "Gruvbox Light Hard", "Gruvbox Light Soft"]
+files = glob.glob(home + "/.local/share/zed/extensions/installed/*/themes/*.json")
+files += glob.glob(home + "/.config/zed/themes/*.json")
+for path in files:
+    try:
+        raw = open(path, encoding="utf-8").read()
+    except OSError:
+        continue
+    try:
+        names += [t["name"] for t in json.loads(raw).get("themes", [])]
+    except Exception:
+        # Some extensions ship JSON5-ish files; their names are still plain.
+        body = raw.split('"themes"', 1)[-1]
+        names += re.findall(r'"name"\s*:\s*"([^"]+)"', body)
+seen = set()
+for n in names:
+    if n and n not in seen:
+        seen.add(n)
+        print(n)
+PY
+}
+
+zed_current() {
+  [[ -f $ZED_SETTINGS ]] || return 0
+  python3 - "$ZED_SETTINGS" <<'PY'
+import re, sys
+raw = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r'"theme"\s*:\s*("([^"]*)"|\{[^}]*\})', raw)
+if m:
+    if m.group(2) is not None:
+        print(m.group(2))
+    else:
+        d = re.search(r'"dark"\s*:\s*"([^"]*)"', m.group(1))
+        print(d.group(1) if d else "")
+PY
+}
+
+# settings.json is JSONC (comments, trailing commas), so it is edited as text.
+set_zed() {
+  mkdir -p "$(dirname "$ZED_SETTINGS")"
+  [[ -f $ZED_SETTINGS ]] || echo '{}' >"$ZED_SETTINGS"
+  python3 - "$ZED_SETTINGS" "$1" <<'PY' || fail "could not edit Zed settings"
+import json, re, sys
+path, name = sys.argv[1], sys.argv[2]
+raw = open(path, encoding="utf-8").read()
+value = '"theme": ' + json.dumps(name)
+pattern = r'"theme"\s*:\s*("[^"]*"|\{[^}]*\})'
+if re.search(pattern, raw):
+    raw = re.sub(pattern, lambda _: value, raw, count=1)
+else:
+    raw = raw.replace("{", "{\n  " + value + ",", 1)
+open(path, "w", encoding="utf-8").write(raw)
+PY
+}
+
+# --- herdr -------------------------------------------------------------------
+
+# herdr has no theme listing; its config validator names every valid theme.
+herdr_themes() {
+  local tmp
+  tmp=$(mktemp -d)
+  mkdir -p "$tmp/herdr"
+  printf '[theme]\nname = "omarchy-appearance-probe"\n' >"$tmp/herdr/config.toml"
+  XDG_CONFIG_HOME="$tmp" herdr config check 2>&1 |
+    grep -o 'valid themes:.*' | sed 's/^valid themes: *//' | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$'
+  rm -rf "$tmp"
+}
+
+herdr_current() {
+  [[ -f $HERDR_CONFIG ]] || return 0
+  awk '
+    /^\s*\[/ { in_theme = ($0 ~ /^\s*\[theme\]/); next }
+    in_theme && /^\s*name\s*=/ { sub(/^[^=]*=\s*"?/, ""); sub(/".*$/, ""); print; exit }
+  ' "$HERDR_CONFIG"
+}
+
+set_herdr() {
+  herdr_themes | grep -qxF "$1" || fail "herdr has no theme named $1"
+  mkdir -p "$(dirname "$HERDR_CONFIG")"
+  touch "$HERDR_CONFIG"
+  local tmp
+  tmp=$(mktemp)
+  # Sets [theme] name and turns auto_switch off, or herdr would override it.
+  awk -v name="$1" '
+    function flush() {
+      if (!in_theme) return
+      if (!seen_name) print "name = \"" name "\""
+      if (!seen_auto) print "auto_switch = false"
+    }
+    /^\s*\[/ {
+      flush()
+      in_theme = ($0 ~ /^\s*\[theme\]/)
+      if (in_theme) { had_theme = 1; seen_name = 0; seen_auto = 0 }
+      print; next
+    }
+    in_theme && /^\s*name\s*=/ { print "name = \"" name "\""; seen_name = 1; next }
+    in_theme && /^\s*auto_switch\s*=/ { print "auto_switch = false"; seen_auto = 1; next }
+    { print }
+    END {
+      flush()
+      if (!had_theme) printf "\n[theme]\nname = \"%s\"\nauto_switch = false\n", name
+    }
+  ' "$HERDR_CONFIG" >"$tmp" && mv "$tmp" "$HERDR_CONFIG"
+  herdr server reload-config >/dev/null 2>&1 || true
+}
+
+# --- desktop and background --------------------------------------------------
+
+current_theme_slug() {
+  cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null
+}
+
+backgrounds_json() {
+  local name
+  name=$(current_theme_slug)
+  find -L "$HOME/.config/omarchy/backgrounds/$name/" "$CURRENT_THEME_DIR/backgrounds/" \
+    -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) \
+    2>/dev/null | sort -u |
+    jq -R -s -c 'split("\n") | map(select(length > 0)) | map({value: ., label: (split("/") | last)})'
+}
+
+# --- state -------------------------------------------------------------------
+
+lines_to_options() {
+  jq -R -s -c 'split("\n") | map(select(length > 0)) | map({value: ., label: .})'
+}
+
+state() {
+  local themes zed_opts='[]' herdr_opts='[]' zed_cur='' herdr_cur='' has_zed=false has_herdr=false
+  local nvim_ok=false
+
+  themes=$(theme_slugs | while read -r s; do printf '%s\t%s\n' "$s" "$(theme_label "$s")"; done |
+    jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t") | {value: .[0], label: .[1]})')
+
+  if zed_installed; then
+    has_zed=true
+    zed_opts=$(zed_themes | lines_to_options)
+    zed_cur=$(zed_current)
+  fi
+  if command -v herdr >/dev/null 2>&1; then
+    has_herdr=true
+    herdr_opts=$(herdr_themes | lines_to_options)
+    herdr_cur=$(herdr_current)
+  fi
+  [[ -d $(dirname "$NVIM_THEME_LINK") ]] && nvim_ok=true
+
+  jq -cn \
+    --argjson themes "$themes" \
+    --arg desktop "$(current_theme_slug)" \
+    --arg background "$(readlink -f "$HOME/.local/state/omarchy/current/background" 2>/dev/null)" \
+    --argjson backgrounds "$(backgrounds_json)" \
+    --arg bar "$(slot_theme bar)" \
+    --arg terminal "$(slot_theme terminal)" \
+    --arg nvim "$(slot_theme nvim)" \
+    --argjson hasNvim "$nvim_ok" \
+    --argjson hasZed "$has_zed" --arg zed "$zed_cur" --argjson zedThemes "$zed_opts" \
+    --argjson hasHerdr "$has_herdr" --arg herdr "$herdr_cur" --argjson herdrThemes "$herdr_opts" \
+    '{ok: true, themes: $themes, desktop: $desktop, background: $background,
+      backgrounds: $backgrounds, bar: $bar, terminal: $terminal, nvim: $nvim,
+      hasNvim: $hasNvim, hasZed: $hasZed, zed: $zed, zedThemes: $zedThemes,
+      hasHerdr: $hasHerdr, herdr: $herdr, herdrThemes: $herdrThemes}'
+}
+
+# --- menu --------------------------------------------------------------------
+
+menu_install() {
+  mkdir -p "$(dirname "$MENU_FILE")"
+  [[ -f $MENU_FILE ]] || printf '{\n}\n' >"$MENU_FILE"
+  grep -q '"style.appearance"' "$MENU_FILE" && return 0
+  local entry
+  entry='  "style.appearance": {"icon":"󰏘","label":"Appearance","aliases":["appearance"],"description":"Desktop, background, bar, terminal and editor themes","when":"test -x \\"$HOME/.config/omarchy/plugins/'"$PLUGIN_ID"'/omarchy-appearance\\"","action":"\\"$HOME/.config/omarchy/plugins/'"$PLUGIN_ID"'/omarchy-appearance\\" open"},'
+  awk -v entry="$entry" '!done && /^\s*\{/ { print; print entry; done = 1; next } { print }' \
+    "$MENU_FILE" >"$MENU_FILE.tmp" && mv "$MENU_FILE.tmp" "$MENU_FILE"
+}
+
+menu_remove() {
+  [[ -f $MENU_FILE ]] && sed -i '/"style.appearance"/d' "$MENU_FILE"
+  return 0
+}
+
+open_panel() {
+  if ! omarchy-shell "$PLUGIN_ID" toggle >/dev/null 2>&1; then
+    omarchy-notification-send -g "󰏘" "Appearance" \
+      "Add the Appearance widget to the bar first: omarchy plugin enable $PLUGIN_ID" >/dev/null 2>&1
+  fi
+}
+
+# --- dispatch ----------------------------------------------------------------
+
+resolve_or_follow() {
+  if [[ $1 == follow ]]; then
+    echo follow
+  else
+    theme_slug "$1"
+  fi
+}
+
+cmd="${1:-}"
+case "$cmd" in
+state) state ;;
+set)
+  target="${2:-}"
+  value="${3:-}"
+  [[ -n $value ]] || fail "usage: omarchy-appearance set <target> <value>"
+  case "$target" in
+  desktop)
+    slug=$(theme_slug "$value") || fail "unknown theme: $value"
+    omarchy-theme-set "$slug" >/dev/null 2>&1 || fail "omarchy theme set $slug failed"
+    ;;
+  background)
+    case "$value" in
+    next) omarchy-theme-bg-next >/dev/null 2>&1 || fail "could not cycle the background" ;;
+    picker)
+      choice=$(omarchy-theme-bg-switcher)
+      [[ -n $choice ]] && omarchy-theme-bg-set "$choice" >/dev/null 2>&1
+      ;;
+    *)
+      [[ -f $value ]] || fail "no such image: $value"
+      omarchy-theme-bg-set "$value" >/dev/null 2>&1 || fail "could not set the background"
+      ;;
+    esac
+    ;;
+  bar | terminal | nvim)
+    slug=$(resolve_or_follow "$value") || fail "unknown theme: $value"
+    "set_$target" "$slug"
+    ;;
+  zed) set_zed "$value" ;;
+  herdr) set_herdr "$value" ;;
+  *) fail "unknown target: $target" ;;
+  esac
+  ok
+  ;;
+pick)
+  case "${2:-}" in
+  desktop)
+    choice=$(omarchy-theme-switcher)
+    [[ -n $choice ]] && omarchy-theme-set "$choice" >/dev/null 2>&1
+    ;;
+  *) fail "usage: omarchy-appearance pick desktop" ;;
+  esac
+  ok
+  ;;
+open) open_panel ;;
+menu)
+  case "${2:-}" in
+  install) menu_install ;;
+  remove) menu_remove ;;
+  *) fail "usage: omarchy-appearance menu install|remove" ;;
+  esac
+  ;;
+*)
+  sed -n '3,15s/^# \{0,1\}//p' "$SELF"
+  exit 1
+  ;;
+esac
