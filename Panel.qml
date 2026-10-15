@@ -31,6 +31,8 @@ Panel {
   readonly property string helper: Qt.resolvedUrl(".").toString().replace("file://", "") + "omarchy-appearance"
 
   readonly property var themeOptions: snapshot ? snapshot.themes : []
+  readonly property var look: snapshot && snapshot.look ? snapshot.look
+    : { available: false, opacity: 100, dim: 0, herdr: false }
   readonly property var followOptions: [{ value: "follow", label: "Follow desktop" }].concat(themeOptions)
 
   // Rows in display order; the cursor walks the visible ones.
@@ -56,6 +58,19 @@ Panel {
     setProc.target = target
     setProc.command = [root.helper, "set", target, value]
     setProc.running = true
+  }
+
+  function run(label, args) {
+    if (root.busyTarget !== "") return
+    root.busyTarget = label
+    root.statusText = "Applying " + label + "…"
+    setProc.target = label
+    setProc.command = [root.helper].concat(args)
+    setProc.running = true
+  }
+
+  function applyLook(key, value) {
+    root.run("terminal look", ["set", "look", key, String(value)])
   }
 
   // The native pickers grab the screen, so the panel gets out of the way.
@@ -293,6 +308,70 @@ Panel {
             value: root.snapshot ? root.snapshot.terminal : "follow"
           }
 
+          Column {
+            visible: root.look.available
+            width: parent.width
+            spacing: Style.spacing.labelGap
+
+            PanelSectionHeader {
+              text: "TERMINAL LOOK"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            LookSlider {
+              label: "Opacity"
+              key: "opacity"
+              minimum: 50
+              maximum: 100
+              value: root.look.opacity
+            }
+
+            LookSlider {
+              label: "Darken background"
+              key: "dim"
+              minimum: 0
+              maximum: 60
+              value: root.look.dim
+            }
+
+            Toggle {
+              width: parent.width
+              label: "Transparent herdr"
+              description: "herdr paints its own background; this lets the opacity through it too"
+              checked: root.look.herdr
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              enabled: root.busyTarget === ""
+              onClicked: root.applyLook("herdr", root.look.herdr ? "off" : "on")
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(6)
+
+              Text {
+                width: parent.width - resetLook.width - parent.spacing
+                anchors.verticalCenter: resetLook.verticalCenter
+                text: "foot reads this when a window opens: open a new terminal to see it."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              PanelActionButton {
+                id: resetLook
+                iconText: "󰑓"
+                tooltipText: "Reset the terminal look"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                enabled: root.busyTarget === ""
+                onClicked: root.run("terminal look", ["look", "reset"])
+              }
+            }
+          }
+
           ThemeRow {
             rowName: "nvim"
             label: "NEOVIM"
@@ -341,6 +420,51 @@ Panel {
   }
 
   // --- building blocks -------------------------------------------------------
+  component LookSlider: Item {
+    id: lookSlider
+    property string label: ""
+    property string key: ""
+    property int minimum: 0
+    property int maximum: 100
+    property int value: 0
+
+    width: parent.width
+    implicitHeight: lookLabel.implicitHeight + slider.implicitHeight
+
+    Text {
+      id: lookLabel
+      text: lookSlider.label
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+    }
+
+    Text {
+      anchors.right: parent.right
+      text: Math.round(slider.liveValue / 5) * 5 + "%"
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+    }
+
+    PanelSlider {
+      id: slider
+      anchors.top: lookLabel.bottom
+      width: parent.width
+      bar: root.bar
+      minimum: lookSlider.minimum
+      maximum: lookSlider.maximum
+      step: 5
+      integer: true
+      value: lookSlider.value
+      enabled: root.busyTarget === ""
+      onReleased: function(v) {
+        var snapped = Math.round(v / 5) * 5
+        if (snapped !== lookSlider.value) root.applyLook(lookSlider.key, snapped)
+      }
+    }
+  }
+
   component ThemeRow: Column {
     id: themeRow
     property string rowName: ""
