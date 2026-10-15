@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "id": "piazza.appearance",
-  "name": "Appearance",
-  "version": "0.2.0",
+  "name": "Appearance UI",
+  "version": "0.2.1",
   "author": "piazza",
   "license": "MIT",
   "description": "Pick the desktop theme, background, bar, terminal, Neovim, Zed and herdr themes independently from one panel.",
@@ -14,7 +14,7 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Appearance",
+    "displayName": "Appearance UI",
     "description": "One panel for every theme on the machine. The bar, terminal and Neovim can follow the desktop theme or stay on their own; Zed and herdr list the themes they ship.",
     "category": "System",
     "aliases": [

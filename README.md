@@ -1,4 +1,4 @@
-# Appearance — Omarchy bar widget
+# Appearance UI — Omarchy bar widget
 
 Pick the theme of each part of the desktop on its own, from one panel in the
 Omarchy bar or from the Omarchy menu (`Style → Appearance`).
