@@ -43,11 +43,11 @@ and the same button removes it.
 
 - Omarchy Quattro (the Quickshell bar) and `jq`, which Omarchy ships.
 - Optional: Zed and herdr. Their rows only appear when they are installed.
-  The Zed row also needs `python3` (`sudo pacman -S python`), used to read
+  The Zed row also needs `python3` (the Arch `python` package), used to read
   theme names and edit `settings.json`, which is JSON with comments.
 
-Nothing needs `sudo`, and no file is touched until you pick something in the
-panel.
+No sudo or pkexec is required, and no file is touched until you pick
+something in the panel.
 
 ## Keys
 
