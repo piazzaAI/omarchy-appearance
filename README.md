@@ -110,9 +110,10 @@ Everything the panel does is a call to the helper, which you can run directly:
   one does not, reopen it.
 - `omarchy refresh` of a terminal or Neovim config, or `omarchy reinstall`,
   restores the stock includes. Reapply the row from the panel afterwards.
-- Foot only reads its config when a window opens, so the terminal look
-  applies to new windows. Darken background does not reach herdr's own
-  background, only Foot's.
+- Opacity and Darken background reach open Foot windows through an OSC 11
+  written to their ptys, the same way Omarchy retints Foot on a theme change.
+  Transparent herdr (`alpha-mode`) has no escape sequence, so it applies to
+  new windows. Darken background does not reach herdr's own background.
 - Setting a herdr theme turns its `auto_switch` off, otherwise herdr would
   replace the choice.
 

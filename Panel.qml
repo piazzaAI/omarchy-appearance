@@ -353,7 +353,7 @@ Panel {
               Text {
                 width: parent.width - resetLook.width - parent.spacing
                 anchors.verticalCenter: resetLook.verticalCenter
-                text: "foot reads this when a window opens: open a new terminal to see it."
+                text: "Opacity and darkness apply to open terminals; Transparent herdr needs a new window."
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption

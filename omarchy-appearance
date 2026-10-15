@@ -192,6 +192,24 @@ write_look() {
   } >"$LOOK_DIR/foot.ini"
 }
 
+# Running windows never re-read foot.ini, so the look reaches them the way
+# omarchy-theme-set-foot retints them: an OSC 11 (URxvt alpha form) written to
+# each window's pty. alpha-mode has no escape sequence and waits for a new window.
+push_look() {
+  local opacity="${1:-$(look_get opacity 100)}" dim="${2:-$(look_get dim 0)}" bg seq foot_pid child_pid tty
+  bg=$(terminal_background)
+  [[ $bg =~ ^[0-9a-fA-F]{6}$ ]] || return 0
+  ((dim > 0)) && bg=$(darken "$bg" "$dim")
+  seq=$(printf '\e]11;[%d]#%s\e\\' "$opacity" "$bg")
+  for foot_pid in $(pgrep -u "$USER" -x foot); do
+    for child_pid in $(pgrep -P "$foot_pid"); do
+      tty=$(readlink "/proc/$child_pid/fd/1" 2>/dev/null)
+      [[ $tty == /dev/pts/* && -w $tty ]] && printf '%s' "$seq" >"$tty"
+    done
+  done
+  return 0
+}
+
 # The look include goes right after the theme include so it wins over it.
 ensure_look_include() {
   [[ -f $FOOT_CONF ]] || fail "no foot config at ~/.config/foot/foot.ini"
@@ -215,7 +233,9 @@ install_look_hook() {
 }
 
 look_refresh() {
-  [[ -f $LOOK_DIR/settings ]] && write_look
+  [[ -f $LOOK_DIR/settings ]] || return 0
+  write_look
+  [[ ${1:-} == live ]] && push_look
   return 0
 }
 
@@ -223,6 +243,7 @@ look_reset() {
   [[ -f $FOOT_CONF ]] && sed -i "\#^${LOOK_INCLUDE}\$#d" "$FOOT_CONF"
   rm -rf "$LOOK_DIR"
   rm -f "$LOOK_HOOK"
+  push_look 100 0
 }
 
 set_look() {
@@ -244,6 +265,7 @@ set_look() {
   write_look
   ensure_look_include
   install_look_hook
+  push_look
 }
 
 # --- neovim ------------------------------------------------------------------
@@ -562,7 +584,7 @@ pick)
 open) open_panel ;;
 look)
   case "${2:-}" in
-  refresh) look_refresh && ok ;;
+  refresh) look_refresh live && ok ;;
   reset) look_reset && ok ;;
   *) fail "usage: omarchy-appearance look refresh|reset" ;;
   esac
