@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "piazza.appearance",
   "name": "Appearance UI",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "author": "piazza",
   "license": "MIT",
-  "description": "Pick the desktop theme, background, bar, terminal, Neovim, Zed and herdr themes independently from one panel.",
+  "description": "Pick the desktop theme, background, bar, terminal, Neovim, Zed and herdr themes independently from one panel, and tune the terminal's opacity and contrast.",
   "kinds": [
     "bar-widget"
   ],

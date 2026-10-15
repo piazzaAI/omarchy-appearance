@@ -9,6 +9,10 @@
 #   omarchy-appearance set bar|terminal|nvim <theme|follow>
 #   omarchy-appearance set zed <zed theme name>
 #   omarchy-appearance set herdr <herdr theme name>
+#   omarchy-appearance set look opacity <50-100>  foot background opacity, in %
+#   omarchy-appearance set look dim <0-60>        darken the foot background, in %
+#   omarchy-appearance set look herdr on|off      let the opacity reach herdr too
+#   omarchy-appearance look refresh|reset         re-derive or drop the foot tweaks
 #   omarchy-appearance pick desktop               native theme switcher
 #   omarchy-appearance open                       toggle the bar panel
 #   omarchy-appearance menu install|remove        entry in the Omarchy menu
@@ -35,6 +39,9 @@ SHELL_TOML="$HOME/.config/omarchy/shell.toml"
 ZED_SETTINGS="$HOME/.config/zed/settings.json"
 HERDR_CONFIG="$HOME/.config/herdr/config.toml"
 MENU_FILE="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
+LOOK_DIR="$STATE_DIR/look"
+LOOK_INCLUDE="include=~/.local/state/omarchy-appearance/look/foot.ini"
+LOOK_HOOK="$HOME/.config/omarchy/hooks/theme-set.d/omarchy-appearance-look"
 
 BLOCK_START="# >>> omarchy-appearance (managed, do not edit)"
 BLOCK_END="# <<< omarchy-appearance"
@@ -135,6 +142,130 @@ set_terminal() {
     render_theme "$1" "$STATE_DIR/terminal" || fail "could not render theme $1"
     point_terminals "~/.local/state/omarchy-appearance/terminal"
   fi
+  look_refresh
+}
+
+# --- terminal look -----------------------------------------------------------
+
+look_get() {
+  local v
+  v=$(sed -n "s/^$1=//p" "$LOOK_DIR/settings" 2>/dev/null | tail -n 1)
+  echo "${v:-$2}"
+}
+
+look_put() {
+  mkdir -p "$LOOK_DIR"
+  { grep -v "^$1=" "$LOOK_DIR/settings" 2>/dev/null; echo "$1=$2"; } >"$LOOK_DIR/settings.tmp"
+  mv "$LOOK_DIR/settings.tmp" "$LOOK_DIR/settings"
+}
+
+# Background of whatever theme the terminal shows right now, pinned or not.
+terminal_background() {
+  local file="$STATE_DIR/terminal/foot.ini"
+  [[ -f $file ]] || file="$CURRENT_THEME_DIR/foot.ini"
+  awk '
+    /^\s*\[/ { in_colors = ($0 ~ /^\s*\[colors(-dark)?\]/); next }
+    in_colors && /^\s*background\s*=/ { sub(/^[^=]*=\s*#?/, ""); sub(/\s.*$/, ""); print; exit }
+  ' "$file" 2>/dev/null
+}
+
+darken() {
+  local hex="$1" keep=$((100 - $2))
+  printf '%02x%02x%02x' $((16#${hex:0:2} * keep / 100)) $((16#${hex:2:2} * keep / 100)) $((16#${hex:4:2} * keep / 100))
+}
+
+# foot.ini only learns about the look file once it exists, because foot
+# refuses to start when an include is missing.
+write_look() {
+  local opacity dim herdr bg
+  opacity=$(look_get opacity 100)
+  dim=$(look_get dim 0)
+  herdr=$(look_get herdr off)
+  {
+    echo "[colors-dark]"
+    ((opacity < 100)) && printf 'alpha=%d.%02d\n' $((opacity / 100)) $((opacity % 100))
+    [[ $herdr == on ]] && echo "alpha-mode=all"
+    if ((dim > 0)); then
+      bg=$(terminal_background)
+      [[ $bg =~ ^[0-9a-fA-F]{6}$ ]] && echo "background=$(darken "$bg" "$dim")"
+    fi
+  } >"$LOOK_DIR/foot.ini"
+}
+
+# Running windows never re-read foot.ini, so the look reaches them the way
+# omarchy-theme-set-foot retints them: an OSC 11 (URxvt alpha form) written to
+# each window's pty. alpha-mode has no escape sequence and waits for a new window.
+push_look() {
+  local opacity="${1:-$(look_get opacity 100)}" dim="${2:-$(look_get dim 0)}" bg seq foot_pid child_pid tty
+  bg=$(terminal_background)
+  [[ $bg =~ ^[0-9a-fA-F]{6}$ ]] || return 0
+  ((dim > 0)) && bg=$(darken "$bg" "$dim")
+  seq=$(printf '\e]11;[%d]#%s\e\\' "$opacity" "$bg")
+  for foot_pid in $(pgrep -u "$USER" -x foot); do
+    for child_pid in $(pgrep -P "$foot_pid"); do
+      tty=$(readlink "/proc/$child_pid/fd/1" 2>/dev/null)
+      [[ $tty == /dev/pts/* && -w $tty ]] && printf '%s' "$seq" >"$tty"
+    done
+  done
+  return 0
+}
+
+# The look include goes right after the theme include so it wins over it.
+ensure_look_include() {
+  [[ -f $FOOT_CONF ]] || fail "no foot config at ~/.config/foot/foot.ini"
+  grep -qxF "$LOOK_INCLUDE" "$FOOT_CONF" && return 0
+  local theme_include='^include=.*(omarchy/current/theme|omarchy-appearance/terminal|omarchy/pinned/[^/]+)/foot[.]ini$'
+  grep -qE "$theme_include" "$FOOT_CONF" || fail "foot.ini has no theme include to layer the look over"
+  awk -v pat="$theme_include" -v line="$LOOK_INCLUDE" \
+    '{ print } !done && $0 ~ pat { print line; done = 1 }' \
+    "$FOOT_CONF" >"$FOOT_CONF.tmp" && mv "$FOOT_CONF.tmp" "$FOOT_CONF"
+}
+
+# Re-derives the darkened background after the desktop theme changes.
+install_look_hook() {
+  [[ -f $LOOK_HOOK ]] && return 0
+  local tmp
+  tmp=$(mktemp -d)
+  printf '#!/bin/bash\n[[ -x "%s" ]] && "%s" look refresh >/dev/null 2>&1\nexit 0\n' "$SELF" "$SELF" \
+    >"$tmp/omarchy-appearance-look"
+  omarchy-hook-install theme-set "$tmp/omarchy-appearance-look" >/dev/null 2>&1
+  rm -rf "$tmp"
+}
+
+look_refresh() {
+  [[ -f $LOOK_DIR/settings ]] || return 0
+  write_look
+  [[ ${1:-} == live ]] && push_look
+  return 0
+}
+
+look_reset() {
+  [[ -f $FOOT_CONF ]] && sed -i "\#^${LOOK_INCLUDE}\$#d" "$FOOT_CONF"
+  rm -rf "$LOOK_DIR"
+  rm -f "$LOOK_HOOK"
+  push_look 100 0
+}
+
+set_look() {
+  local key="$1" value="$2"
+  [[ $key != herdr && $value =~ ^[0-9]+$ ]] && value=$((10#$value))
+  case "$key" in
+  opacity)
+    [[ $value =~ ^[0-9]+$ ]] && ((value >= 50 && value <= 100)) || fail "opacity must be 50-100"
+    ;;
+  dim)
+    [[ $value =~ ^[0-9]+$ ]] && ((value >= 0 && value <= 60)) || fail "dim must be 0-60"
+    ;;
+  herdr)
+    [[ $value == on || $value == off ]] || fail "herdr must be on or off"
+    ;;
+  *) fail "unknown look setting: $key" ;;
+  esac
+  look_put "$key" "$value"
+  write_look
+  ensure_look_include
+  install_look_hook
+  push_look
 }
 
 # --- neovim ------------------------------------------------------------------
@@ -328,7 +459,8 @@ lines_to_options() {
 
 state() {
   local themes zed_opts='[]' herdr_opts='[]' zed_cur='' herdr_cur='' has_zed=false has_herdr=false
-  local nvim_ok=false
+  local nvim_ok=false has_foot=false
+  [[ -f $FOOT_CONF ]] && has_foot=true
 
   themes=$(theme_slugs | while read -r s; do printf '%s\t%s\n' "$s" "$(theme_label "$s")"; done |
     jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t") | {value: .[0], label: .[1]})')
@@ -359,7 +491,11 @@ state() {
     --argjson hasZed "$has_zed" --arg zed "$zed_cur" --argjson zedThemes "$zed_opts" \
     --argjson hasHerdr "$has_herdr" --arg herdr "$herdr_cur" --argjson herdrThemes "$herdr_opts" \
     --argjson inMenu "$in_menu" \
-    '{inMenu: $inMenu, ok: true, themes: $themes, desktop: $desktop, background: $background,
+    --argjson hasFoot "$has_foot" \
+    --argjson opacity "$(look_get opacity 100)" --argjson dim "$(look_get dim 0)" \
+    --arg lookHerdr "$(look_get herdr off)" \
+    '{inMenu: $inMenu, ok: true,
+      look: {available: $hasFoot, opacity: $opacity, dim: $dim, herdr: ($lookHerdr == "on")}, themes: $themes, desktop: $desktop, background: $background,
       backgrounds: $backgrounds, bar: $bar, terminal: $terminal, nvim: $nvim,
       hasNvim: $hasNvim, hasZed: $hasZed, zed: $zed, zedThemes: $zedThemes,
       hasHerdr: $hasHerdr, herdr: $herdr, herdrThemes: $herdrThemes}'
@@ -430,6 +566,7 @@ set)
     ;;
   zed) set_zed "$value" ;;
   herdr) set_herdr "$value" ;;
+  look) set_look "$value" "${4:-}" ;;
   *) fail "unknown target: $target" ;;
   esac
   ok
@@ -445,6 +582,13 @@ pick)
   ok
   ;;
 open) open_panel ;;
+look)
+  case "${2:-}" in
+  refresh) look_refresh live && ok ;;
+  reset) look_reset && ok ;;
+  *) fail "usage: omarchy-appearance look refresh|reset" ;;
+  esac
+  ;;
 menu)
   case "${2:-}" in
   install) menu_install && ok ;;
@@ -453,7 +597,7 @@ menu)
   esac
   ;;
 *)
-  sed -n '3,15s/^# \{0,1\}//p' "$SELF"
+  sed -n '3,19s/^# \{0,1\}//p' "$SELF"
   exit 1
   ;;
 esac
