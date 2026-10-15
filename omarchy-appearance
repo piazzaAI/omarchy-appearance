@@ -344,6 +344,8 @@ state() {
     herdr_cur=$(herdr_current)
   fi
   [[ -d $(dirname "$NVIM_THEME_LINK") ]] && nvim_ok=true
+  local in_menu=false
+  grep -q '"style.appearance"' "$MENU_FILE" 2>/dev/null && in_menu=true
 
   jq -cn \
     --argjson themes "$themes" \
@@ -356,7 +358,8 @@ state() {
     --argjson hasNvim "$nvim_ok" \
     --argjson hasZed "$has_zed" --arg zed "$zed_cur" --argjson zedThemes "$zed_opts" \
     --argjson hasHerdr "$has_herdr" --arg herdr "$herdr_cur" --argjson herdrThemes "$herdr_opts" \
-    '{ok: true, themes: $themes, desktop: $desktop, background: $background,
+    --argjson inMenu "$in_menu" \
+    '{inMenu: $inMenu, ok: true, themes: $themes, desktop: $desktop, background: $background,
       backgrounds: $backgrounds, bar: $bar, terminal: $terminal, nvim: $nvim,
       hasNvim: $hasNvim, hasZed: $hasZed, zed: $zed, zedThemes: $zedThemes,
       hasHerdr: $hasHerdr, herdr: $herdr, herdrThemes: $herdrThemes}'
@@ -444,8 +447,8 @@ pick)
 open) open_panel ;;
 menu)
   case "${2:-}" in
-  install) menu_install ;;
-  remove) menu_remove ;;
+  install) menu_install && ok ;;
+  remove) menu_remove && ok ;;
   *) fail "usage: omarchy-appearance menu install|remove" ;;
   esac
   ;;

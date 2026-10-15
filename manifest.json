@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "piazza.appearance",
   "name": "Appearance",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "piazza",
   "license": "MIT",
   "description": "Pick the desktop theme, background, bar, terminal, Neovim, Zed and herdr themes independently from one panel.",
@@ -29,18 +29,6 @@
       "herdr"
     ],
     "allowMultiple": false,
-    "defaultSection": "right",
-    "defaults": {
-      "addMenuEntry": true
-    },
-    "schema": [
-      {
-        "key": "addMenuEntry",
-        "type": "boolean",
-        "label": "Add an Appearance entry to the Omarchy menu",
-        "defaultValue": true,
-        "description": "Writes style.appearance into ~/.config/omarchy/extensions/omarchy-menu.jsonc. Turning it off removes the entry."
-      }
-    ]
+    "defaultSection": "right"
   }
 }

@@ -5,6 +5,8 @@ Omarchy bar or from the Omarchy menu (`Style → Appearance`).
 
 ![bar icon](https://img.shields.io/badge/omarchy-plugin-blue)
 
+<img src="preview.png" alt="Appearance panel" width="350">
+
 ## What it controls
 
 | Row        | Choices                              | How it applies                                   |
@@ -32,9 +34,20 @@ back at `~/.local/state/omarchy/current/theme/`.
 omarchy plugin add https://github.com/piazzaAI/omarchy-appearance.git --enable
 ```
 
-Enabling it adds the bar icon and, on first load, the `Style → Appearance`
-menu entry. Turn the entry off with the widget's *Add an Appearance entry to
-the Omarchy menu* setting.
+Enabling it adds the bar icon. To also reach the panel from the Omarchy menu,
+press *Add to the Omarchy menu* at the bottom of the panel: it adds a
+`Style → Appearance` row to `~/.config/omarchy/extensions/omarchy-menu.jsonc`,
+and the same button removes it.
+
+## Dependencies
+
+- Omarchy Quattro (the Quickshell bar) and `jq`, which Omarchy ships.
+- Optional: Zed and herdr. Their rows only appear when they are installed.
+  The Zed row also needs `python3` (`sudo pacman -S python`), used to read
+  theme names and edit `settings.json`, which is JSON with comments.
+
+Nothing needs `sudo`, and no file is touched until you pick something in the
+panel.
 
 ## Keys
 

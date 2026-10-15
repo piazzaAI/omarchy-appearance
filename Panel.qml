@@ -20,9 +20,6 @@ Panel {
   readonly property color dim: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.6)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  // --- settings --------------------------------------------------------------
-  readonly property bool addMenuEntry: setting("addMenuEntry", true) !== false
-
   // --- state -----------------------------------------------------------------
   property var snapshot: null
   property string errorText: ""
@@ -67,8 +64,12 @@ Panel {
     Quickshell.execDetached([root.helper].concat(args))
   }
 
-  function syncMenu() {
-    Quickshell.execDetached([root.helper, "menu", root.addMenuEntry ? "install" : "remove"])
+  function toggleMenuEntry() {
+    if (!root.snapshot || setProc.running) return
+    root.busyTarget = "menu"
+    setProc.target = "menu entry"
+    setProc.command = [root.helper, "menu", root.snapshot.inMenu ? "remove" : "install"]
+    setProc.running = true
   }
 
   function rowItem(name) {
@@ -99,11 +100,7 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  Component.onCompleted: {
-    root.syncMenu()
-    root.refresh()
-  }
-  onAddMenuEntryChanged: root.syncMenu()
+  Component.onCompleted: root.refresh()
 
   onOpenedChanged: if (opened) {
     root.cursorActive = false
@@ -277,7 +274,7 @@ Panel {
             actionIcon: "󰒭"
             actionTip: "Next background (n)"
             onAction: root.apply("background", "next")
-            secondIcon: ""
+            secondIcon: "󰸉"
             secondTip: "Open the background switcher"
             onSecondAction: root.launch(["set", "background", "picker"])
           }
@@ -318,6 +315,20 @@ Panel {
             visible: root.snapshot ? root.snapshot.hasHerdr : false
             options: root.snapshot ? root.snapshot.herdrThemes : []
             value: root.snapshot ? root.snapshot.herdr : ""
+          }
+
+          PanelSeparator { foreground: root.foreground }
+
+          Button {
+            width: parent.width
+            leftAlign: true
+            iconText: "󰍜"
+            text: root.snapshot && root.snapshot.inMenu ? "Remove from the Omarchy menu" : "Add to the Omarchy menu (Style → Appearance)"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            enabled: root.snapshot !== null && root.busyTarget === ""
+            onClicked: root.toggleMenuEntry()
           }
         }
       }
